@@ -1,102 +1,233 @@
 import streamlit as st
-import yfinance as yf
 from streamlit_autorefresh import st_autorefresh
+import yfinance as yf
+from datetime import datetime
+import pytz
 
-# --- TERMINAL STYLING & DYNAMIC COLORING ---
-st.set_page_config(layout="wide", page_title="Institutional Market Terminal")
+# Auto-refresh every 60 seconds
+st_autorefresh(interval=60000, key="market_pulse_refresh")
 
-# Custom CSS for the "Eikon" Grid Aesthetic
+# Page configuration
+st.set_page_config(
+    page_title="Market Pulse",
+    layout="wide",
+    initial_sidebar_state="collapsed"
+)
+
+# Custom CSS for Eikon/Bloomberg-style UI
 st.markdown("""
-    <style>
-    /* Main background */
-    .stApp { background-color: #0c0c0c; color: #ffffff; }
+<style>
+    /* Global dark theme */
+    .stApp {
+        background-color: #0c0c0c;
+    }
     
-    /* Price formatting (entire string turns color) */
-    .price-up { color: #00FF00 !important; font-family: 'Courier New', monospace; font-size: 18px; font-weight: bold; margin: 0; padding: 0;}
-    .price-down { color: #FF0000 !important; font-family: 'Courier New', monospace; font-size: 18px; font-weight: bold; margin: 0; padding: 0;}
+    /* Remove default padding */
+    .block-container {
+        padding-top: 2rem;
+        padding-bottom: 0rem;
+        padding-left: 3rem;
+        padding-right: 3rem;
+    }
     
-    /* Section headers and ticker labels */
-    .section-header { color: #FFD700; font-size: 18px; font-weight: bold; border-bottom: 1px solid #444; margin-top: 20px; margin-bottom: 15px; padding-bottom: 5px; text-transform: uppercase;}
-    .ticker-label { color: #888; font-size: 13px; margin-bottom: 2px; font-weight: 600;}
+    /* Section headers */
+    .section-header {
+        color: #888888;
+        font-size: 12px;
+        font-weight: 600;
+        letter-spacing: 1.5px;
+        margin-bottom: 8px;
+        margin-top: 16px;
+        border-bottom: 1px solid #333333;
+        padding-bottom: 4px;
+    }
     
-    /* The "Quote Box" effect */
-    .metric-container { background-color: #111; padding: 12px; border-radius: 4px; border: 1px solid #333; margin-bottom: 10px;}
-    </style>
-    """, unsafe_allow_html=True)
+    /* Ticker card */
+    .ticker-card {
+        background-color: #1a1a1a;
+        border: 1px solid #2a2a2a;
+        border-radius: 4px;
+        padding: 10px 12px;
+        margin-bottom: 8px;
+    }
+    
+    /* Ticker symbol */
+    .ticker-symbol {
+        color: #cccccc;
+        font-size: 13px;
+        font-weight: 600;
+        margin-bottom: 2px;
+    }
+    
+    /* Ticker name */
+    .ticker-name {
+        color: #666666;
+        font-size: 11px;
+        margin-bottom: 6px;
+    }
+    
+    /* Price - will be colored dynamically */
+    .price {
+        font-size: 20px;
+        font-weight: 700;
+        margin-bottom: 2px;
+    }
+    
+    /* Change percentage - will be colored dynamically */
+    .change {
+        font-size: 14px;
+        font-weight: 600;
+    }
+    
+    /* Positive change */
+    .positive {
+        color: #00FF00;
+    }
+    
+    /* Negative change */
+    .negative {
+        color: #FF0000;
+    }
+    
+    /* Timestamp */
+    .timestamp {
+        color: #666666;
+        font-size: 11px;
+        text-align: right;
+        margin-top: 12px;
+    }
+    
+    /* Remove streamlit branding */
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+    header {visibility: hidden;}
+</style>
+""", unsafe_allow_html=True)
 
-# --- SESSION STATE & WATCHLIST MANAGEMENT ---
-# Default dictionary. You can permanently edit these here.
-default_watchlist = {
-    "MARKET INDEXES": ['SPY', 'QQQ', 'DIA', 'IWM'],
-    "TECH & MOBILITY": ['AAPL', 'NVDA', 'TSLA', 'MSFT', 'GOOG'],
-    "MACRO & YIELDS": ['^TNX', 'DX-Y.NYB', 'BTC-USD']
+# Watchlist configuration
+WATCHLIST = {
+    "EQUITY INDEXES": {
+        "^GSPC": "S&P 500",
+        "^DJI": "Dow Jones",
+        "^IXIC": "NASDAQ",
+        "^RUT": "Russell 2000"
+    },
+    "TECH/GROWTH": {
+        "AAPL": "Apple",
+        "MSFT": "Microsoft",
+        "NVDA": "NVIDIA",
+        "GOOGL": "Alphabet",
+        "AMZN": "Amazon",
+        "META": "Meta",
+        "TSLA": "Tesla",
+        "AMD": "AMD"
+    },
+    "MACRO & RATES": {
+        "^TNX": "10Y Treasury Yield",
+        "DX-Y.NYB": "US Dollar Index",
+        "GC=F": "Gold Futures",
+        "CL=F": "Crude Oil WTI",
+        "BTC-USD": "Bitcoin"
+    },
+    "FIXED INCOME/FX": {
+        "TLT": "20Y+ Treasury ETF",
+        "IEF": "7-10Y Treasury ETF",
+        "LQD": "Investment Grade Bond",
+        "EURUSD=X": "EUR/USD",
+        "GBPUSD=X": "GBP/USD"
+    }
 }
 
-# Load into session state so it can be dynamically updated via the sidebar
-if 'watchlist' not in st.session_state:
-    st.session_state.watchlist = default_watchlist
-
-# --- SIDEBAR COMMAND CENTER ---
-with st.sidebar:
-    st.header("⌨️ Command Center")
-    st.subheader("Add New Ticker")
-    
-    new_ticker = st.text_input("Ticker Symbol (e.g., AMZN, JPM):").upper()
-    target_section = st.selectbox("Select Section:", list(st.session_state.watchlist.keys()))
-    
-    if st.button("Add to Grid") and new_ticker:
-        # Prevent duplicates
-        if new_ticker not in st.session_state.watchlist[target_section]:
-            st.session_state.watchlist[target_section].append(new_ticker)
-            st.rerun()
-
-# --- INSTITUTIONAL DATA ENGINE ---
-@st.cache_data(ttl=60) # Caches data for 60 seconds to prevent API limits
-def get_market_data(ticker):
+@st.cache_data(ttl=60)
+def fetch_ticker_data(symbol):
+    """Fetch current price and calculate accurate daily change"""
     try:
-        t = yf.Ticker(ticker)
-        # Using fast_info guarantees the true previous close for accurate daily % change
-        info = t.fast_info 
-        current_price = info['last_price']
-        prev_close = info['previous_close']
+        ticker = yf.Ticker(symbol)
         
-        change = current_price - prev_close
-        pct_change = (change / prev_close) * 100
-        return current_price, pct_change
-    except:
-        return None, None
+        # Use fast_info for accurate real-time data
+        last_price = ticker.fast_info.get('last_price')
+        previous_close = ticker.fast_info.get('previous_close')
+        
+        if last_price is None or previous_close is None:
+            return None
+        
+        # Calculate accurate daily change
+        change = last_price - previous_close
+        change_pct = (change / previous_close) * 100
+        
+        return {
+            'price': last_price,
+            'change': change,
+            'change_pct': change_pct
+        }
+    except Exception as e:
+        return None
 
-# --- MAIN DASHBOARD RENDERING ---
-st.title("⚡ INSTITUTIONAL MARKET DASHBOARD")
-
-# Iterate through sections and build the 4-column grid
-for section, tickers in st.session_state.watchlist.items():
-    st.markdown(f"<div class='section-header'>{section}</div>", unsafe_allow_html=True)
+def render_ticker_card(symbol, name, data):
+    """Render individual ticker card with Eikon-style formatting"""
+    if data is None:
+        return f"""
+        <div class="ticker-card">
+            <div class="ticker-symbol">{symbol}</div>
+            <div class="ticker-name">{name}</div>
+            <div style="color: #666666; font-size: 12px;">Data Unavailable</div>
+        </div>
+        """
     
-    cols = st.columns(4)
-    for i, ticker in enumerate(tickers):
-        with cols[i % 4]:
-            p, pct = get_market_data(ticker)
-            
-            if p is not None:
-                color_class = "price-up" if pct >= 0 else "price-down"
-                arrow = "▲" if pct >= 0 else "▼"
-                
-                # HTML rendering for the quote boxes
-                st.markdown(f"""
-                    <div class='metric-container'>
-                        <div class='ticker-label'>{ticker}</div>
-                        <div class='{color_class}'>{p:,.2f} <span style='font-size:14px;'>{arrow} {abs(pct):.2f}%</span></div>
-                    </div>
-                """, unsafe_allow_html=True)
-            else:
-                st.markdown(f"""
-                    <div class='metric-container'>
-                        <div class='ticker-label'>{ticker}</div>
-                        <div style='color: #888;'>Data N/A</div>
-                    </div>
-                """, unsafe_allow_html=True)
+    # Determine color class based on change
+    color_class = "positive" if data['change'] >= 0 else "negative"
+    
+    # Format price with appropriate decimals
+    if data['price'] < 1:
+        price_str = f"${data['price']:.4f}"
+    elif data['price'] < 10:
+        price_str = f"${data['price']:.3f}"
+    else:
+        price_str = f"${data['price']:.2f}"
+    
+    # Special formatting for certain symbols
+    if symbol == "^TNX":
+        price_str = f"{data['price']:.3f}%"
+    elif symbol in ["EURUSD=X", "GBPUSD=X"]:
+        price_str = f"{data['price']:.4f}"
+    
+    # Format change with sign
+    sign = "+" if data['change'] >= 0 else ""
+    change_str = f"{sign}{data['change_pct']:.2f}%"
+    
+    return f"""
+    <div class="ticker-card">
+        <div class="ticker-symbol">{symbol}</div>
+        <div class="ticker-name">{name}</div>
+        <div class="price {color_class}">{price_str}</div>
+        <div class="change {color_class}">{change_str}</div>
+    </div>
+    """
 
-# --- AUTO REFRESH ---
-# Triggers the app to re-run every 60,000 milliseconds (1 minute)
-st_autorefresh(interval=60000, key="datarefresh")
+# Dashboard header
+st.markdown("<h1 style='color: #ffffff; font-size: 28px; margin-bottom: 0px;'>MARKET PULSE</h1>", unsafe_allow_html=True)
+
+# Timestamp
+ny_tz = pytz.timezone('America/New_York')
+current_time = datetime.now(ny_tz).strftime("%Y-%m-%d %H:%M:%S ET")
+st.markdown(f"<div class='timestamp'>Last Updated: {current_time}</div>", unsafe_allow_html=True)
+
+# Render dashboard sections
+for section_name, tickers in WATCHLIST.items():
+    st.markdown(f"<div class='section-header'>{section_name}</div>", unsafe_allow_html=True)
+    
+    # Create 4-column grid
+    cols = st.columns(4)
+    
+    # Distribute tickers across columns
+    ticker_items = list(tickers.items())
+    for idx, (symbol, name) in enumerate(ticker_items):
+        col_idx = idx % 4
+        
+        with cols[col_idx]:
+            data = fetch_ticker_data(symbol)
+            card_html = render_ticker_card(symbol, name, data)
+            st.markdown(card_html, unsafe_allow_html=True)
+
+# Footer with data source
+st.markdown("<div class='timestamp' style='margin-top: 24px; text-align: center;'>Data Source: Yahoo Finance | Auto-refresh: 60s</div>", unsafe_allow_html=True)
