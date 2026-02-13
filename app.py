@@ -1,88 +1,102 @@
 import streamlit as st
 import yfinance as yf
-import plotly.graph_objects as go
-import pandas as pd
+from streamlit_autorefresh import st_autorefresh
 
 # --- TERMINAL STYLING & DYNAMIC COLORING ---
-st.set_page_config(layout="wide", page_title="Wealth Management Terminal")
+st.set_page_config(layout="wide", page_title="Institutional Market Terminal")
 
-def get_style(color_hex):
-    return f"""
+# Custom CSS for the "Eikon" Grid Aesthetic
+st.markdown("""
     <style>
-    .stApp {{ background-color: #0c0c0c; color: #ffffff; }}
-    .stButton>button {{ border: 1px solid #444; background-color: #111; color: #ffffff; width: 100%; font-size: 12px; }}
-    /* Custom classes for ticker colors */
-    .price-up {{ color: #00FF00 !important; font-family: 'Courier New'; font-size: 20px; font-weight: bold; }}
-    .price-down {{ color: #FF0000 !important; font-family: 'Courier New'; font-size: 20px; font-weight: bold; }}
-    .ticker-label {{ color: #888; font-size: 12px; margin-bottom: -10px; }}
+    /* Main background */
+    .stApp { background-color: #0c0c0c; color: #ffffff; }
+    
+    /* Price formatting (entire string turns color) */
+    .price-up { color: #00FF00 !important; font-family: 'Courier New', monospace; font-size: 18px; font-weight: bold; margin: 0; padding: 0;}
+    .price-down { color: #FF0000 !important; font-family: 'Courier New', monospace; font-size: 18px; font-weight: bold; margin: 0; padding: 0;}
+    
+    /* Section headers and ticker labels */
+    .section-header { color: #FFD700; font-size: 18px; font-weight: bold; border-bottom: 1px solid #444; margin-top: 20px; margin-bottom: 15px; padding-bottom: 5px; text-transform: uppercase;}
+    .ticker-label { color: #888; font-size: 13px; margin-bottom: 2px; font-weight: 600;}
+    
+    /* The "Quote Box" effect */
+    .metric-container { background-color: #111; padding: 12px; border-radius: 4px; border: 1px solid #333; margin-bottom: 10px;}
     </style>
-    """
-st.markdown(get_style("#00FF00"), unsafe_allow_html=True)
+    """, unsafe_allow_html=True)
+
+# --- SESSION STATE & WATCHLIST MANAGEMENT ---
+# Default dictionary. You can permanently edit these here.
+default_watchlist = {
+    "MARKET INDEXES": ['SPY', 'QQQ', 'DIA', 'IWM'],
+    "TECH & MOBILITY": ['AAPL', 'NVDA', 'TSLA', 'MSFT', 'GOOG'],
+    "MACRO & YIELDS": ['^TNX', 'DX-Y.NYB', 'BTC-USD']
+}
+
+# Load into session state so it can be dynamically updated via the sidebar
+if 'watchlist' not in st.session_state:
+    st.session_state.watchlist = default_watchlist
 
 # --- SIDEBAR COMMAND CENTER ---
 with st.sidebar:
     st.header("⌨️ Command Center")
-    st.subheader("Manage Watchlist")
+    st.subheader("Add New Ticker")
     
-    # Default list including your favorites like SPY, QQQ, and the 10Y Yield (^TNX)
-    if 'ticker_list' not in st.session_state:
-        st.session_state.ticker_list = ['SPY', 'QQQ', 'DIA', 'IWM', 'TSLA', 'AAPL', 'NVDA', '^TNX', 'DX-Y.NYB']
+    new_ticker = st.text_input("Ticker Symbol (e.g., AMZN, JPM):").upper()
+    target_section = st.selectbox("Select Section:", list(st.session_state.watchlist.keys()))
     
-    new_ticker = st.text_input("Add Ticker (e.g., MSFT, GOOG, BTC-USD):").upper()
     if st.button("Add to Grid") and new_ticker:
-        if new_ticker not in st.session_state.ticker_list:
-            st.session_state.ticker_list.append(new_ticker)
+        # Prevent duplicates
+        if new_ticker not in st.session_state.watchlist[target_section]:
+            st.session_state.watchlist[target_section].append(new_ticker)
             st.rerun()
-            
-    if st.button("Clear All"):
-        st.session_state.ticker_list = []
-        st.rerun()
 
-# --- DATA ENGINE ---
-@st.cache_data(ttl=60)
+# --- INSTITUTIONAL DATA ENGINE ---
+@st.cache_data(ttl=60) # Caches data for 60 seconds to prevent API limits
 def get_market_data(ticker):
     try:
-        df = yf.download(ticker, period="2d", interval="1m", progress=False)
-        if df.empty: return None, None, None
-        current_price = float(df['Close'].iloc[-1])
-        open_price = float(df['Close'].iloc[0])
-        change_pct = ((current_price - open_price) / open_price) * 100
-        return current_price, change_pct, (current_price - open_price)
-    except:
-        return None, None, None
-
-# --- THE GRID ---
-st.title("⚡ VIBE TERMINAL")
-if 'active_ticker' not in st.session_state:
-    st.session_state.active_ticker = 'SPY'
-
-# Responsive grid (4 columns for smaller text/tighter fit)
-cols = st.columns(4)
-for i, ticker in enumerate(st.session_state.ticker_list):
-    with cols[i % 4]:
-        p, pct, raw_change = get_market_data(ticker)
+        t = yf.Ticker(ticker)
+        # Using fast_info guarantees the true previous close for accurate daily % change
+        info = t.fast_info 
+        current_price = info['last_price']
+        prev_close = info['previous_close']
         
-        if p is not None:
-            color_class = "price-up" if pct >= 0 else "price-down"
-            arrow = "▲" if pct >= 0 else "▼"
-            
-            # Rendering custom HTML for the "Eikon" look
-            st.markdown(f"<p class='ticker-label'>{ticker}</p>", unsafe_allow_html=True)
-            st.markdown(f"<p class='{color_class}'>{p:,.2f} <span style='font-size:14px;'>{arrow} {abs(pct):.2f}%</span></p>", unsafe_allow_html=True)
-            
-            if st.button(f"CHART {ticker}", key=f"btn_{ticker}"):
-                st.session_state.active_ticker = ticker
-        else:
-            st.write(f"{ticker}: N/A")
+        change = current_price - prev_close
+        pct_change = (change / prev_close) * 100
+        return current_price, pct_change
+    except:
+        return None, None
 
-# --- MASTER CHART ---
-st.divider()
-active = st.session_state.active_ticker
-try:
-    chart_df = yf.download(active, period="1mo", interval="1h", progress=False)
-    fig = go.Figure(data=[go.Candlestick(x=chart_df.index, open=chart_df['Open'], 
-                    high=chart_df['High'], low=chart_df['Low'], close=chart_df['Close'])])
-    fig.update_layout(title=f"Technical: {active}", template="plotly_dark", height=500, margin=dict(l=0, r=0, t=30, b=0))
-    st.plotly_chart(fig, use_container_width=True)
-except:
-    st.error("Chart unavailable")
+# --- MAIN DASHBOARD RENDERING ---
+st.title("⚡ INSTITUTIONAL MARKET DASHBOARD")
+
+# Iterate through sections and build the 4-column grid
+for section, tickers in st.session_state.watchlist.items():
+    st.markdown(f"<div class='section-header'>{section}</div>", unsafe_allow_html=True)
+    
+    cols = st.columns(4)
+    for i, ticker in enumerate(tickers):
+        with cols[i % 4]:
+            p, pct = get_market_data(ticker)
+            
+            if p is not None:
+                color_class = "price-up" if pct >= 0 else "price-down"
+                arrow = "▲" if pct >= 0 else "▼"
+                
+                # HTML rendering for the quote boxes
+                st.markdown(f"""
+                    <div class='metric-container'>
+                        <div class='ticker-label'>{ticker}</div>
+                        <div class='{color_class}'>{p:,.2f} <span style='font-size:14px;'>{arrow} {abs(pct):.2f}%</span></div>
+                    </div>
+                """, unsafe_allow_html=True)
+            else:
+                st.markdown(f"""
+                    <div class='metric-container'>
+                        <div class='ticker-label'>{ticker}</div>
+                        <div style='color: #888;'>Data N/A</div>
+                    </div>
+                """, unsafe_allow_html=True)
+
+# --- AUTO REFRESH ---
+# Triggers the app to re-run every 60,000 milliseconds (1 minute)
+st_autorefresh(interval=60000, key="datarefresh")
